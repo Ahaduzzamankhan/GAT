@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
 
 func initDatabase(dbPath string) error {
 	var err error
-	db, err = sql.Open("sqlite3", dbPath)
+	db, err = sql.Open("sqlite", dbPath)
 	if err != nil {
 		return err
 	}
@@ -186,21 +187,25 @@ func queryGameByID(id int) map[string]interface{} {
 }
 
 func upsertGame(executable, name string) int {
-	// Check if exists
-	row := db.QueryRow("SELECT id FROM games WHERE executable = ?", executable)
+	exeLower := strings.ToLower(executable)
+	// Case-insensitive lookup to avoid duplicate rows for same exe
+	row := db.QueryRow("SELECT id FROM games WHERE lower(executable) = ?", exeLower)
 	var id int
 	if err := row.Scan(&id); err == nil {
 		return id
 	}
 
-	// Insert new game
-	result, err := db.Exec("INSERT INTO games (executable, name, firstSeen) VALUES (?, ?, datetime('now'))", executable, name)
+	result, err := db.Exec("INSERT OR IGNORE INTO games (executable, name, firstSeen) VALUES (?, ?, datetime('now'))", exeLower, name)
 	if err != nil {
 		log.Printf("Error upserting game: %v", err)
 		return 0
 	}
 
 	lastID, _ := result.LastInsertId()
+	if lastID == 0 {
+		// Row already existed due to race — fetch it
+		db.QueryRow("SELECT id FROM games WHERE lower(executable) = ?", exeLower).Scan(&lastID)
+	}
 	return int(lastID)
 }
 
@@ -611,4 +616,18 @@ func exportToCSV(filter string) string {
 	}
 
 	return csv
+}
+
+
+func getCacheEntry(key string) map[string]interface{} {
+	row := db.QueryRow("SELECT key, imageUrl, localPath, metadata FROM cache WHERE key = ?", key)
+	var k, imageUrl, localPath, metadata string
+	if err := row.Scan(&k, &imageUrl, &localPath, &metadata); err != nil {
+		return nil
+	}
+	return map[string]interface{}{"key": k, "imageUrl": imageUrl, "localPath": localPath, "metadata": metadata}
+}
+
+func updateGameImages(id int, icon, coverImage string) {
+	db.Exec("UPDATE games SET icon = ?, coverImage = ? WHERE id = ?", icon, coverImage, id)
 }

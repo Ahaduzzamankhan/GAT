@@ -31,12 +31,20 @@ export default function SettingsPage() {
   const { settings, setSetting } = useSettings()
 
   const handleCleanCache = async () => {
-    const days = parseInt(settings?.cacheDuration || '30')
+    const days = parseInt(s.cacheDuration || '30')
     const count = await api.cache.clean(days)
     alert(`Cleaned ${count} old cache entries`)
   }
 
-  if (!settings) return null
+  const s = settings ?? {
+    startWithWindows: 'false',
+    minimizeToTray: 'true',
+    notifications: 'true',
+    theme: 'dark',
+    trackingEnabled: 'true',
+    scanInterval: '5000',
+    cacheDuration: '30'
+  }
 
   return (
     <div className="p-6 overflow-y-auto h-full">
@@ -49,19 +57,19 @@ export default function SettingsPage() {
           <h2 className="text-text-primary font-semibold mb-1">Application</h2>
           <p className="text-text-muted text-xs mb-4">General application settings</p>
           <Toggle
-            checked={settings.startWithWindows === 'true'}
+            checked={s.startWithWindows === 'true'}
             onChange={v => setSetting('startWithWindows', String(v))}
             label="Start with Windows"
             description="Launch GAT automatically when Windows starts"
           />
           <Toggle
-            checked={settings.minimizeToTray === 'true'}
+            checked={s.minimizeToTray === 'true'}
             onChange={v => setSetting('minimizeToTray', String(v))}
             label="Minimize to system tray"
             description="Keep GAT running in the background when closed"
           />
           <Toggle
-            checked={settings.notifications === 'true'}
+            checked={s.notifications === 'true'}
             onChange={v => setSetting('notifications', String(v))}
             label="Desktop notifications"
             description="Show notifications when a game starts or stops"
@@ -72,7 +80,7 @@ export default function SettingsPage() {
           <h2 className="text-text-primary font-semibold mb-1">Tracking</h2>
           <p className="text-text-muted text-xs mb-4">Game detection settings</p>
           <Toggle
-            checked={settings.trackingEnabled === 'true'}
+            checked={s.trackingEnabled === 'true'}
             onChange={v => setSetting('trackingEnabled', String(v))}
             label="Enable game tracking"
             description="Automatically detect and track running games"
@@ -84,7 +92,7 @@ export default function SettingsPage() {
                 <div className="text-text-muted text-xs mt-0.5">How often to check for running games</div>
               </div>
               <select
-                value={settings.scanInterval}
+                value={s.scanInterval}
                 onChange={e => setSetting('scanInterval', e.target.value)}
                 className="bg-bg-tertiary border border-border-default rounded-lg px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-border-active"
               >
@@ -106,7 +114,7 @@ export default function SettingsPage() {
               <div className="text-text-muted text-xs mt-0.5">Delete unused cache after this many days</div>
             </div>
             <select
-              value={settings.cacheDuration}
+              value={s.cacheDuration}
               onChange={e => setSetting('cacheDuration', e.target.value)}
               className="bg-bg-tertiary border border-border-default rounded-lg px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-border-active"
             >

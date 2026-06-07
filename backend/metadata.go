@@ -8,215 +8,188 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
-func getCacheDir() string {
-	userDataPath := getUserDataPath()
-	cacheDir := filepath.Join(userDataPath, "cache", "images")
-	os.MkdirAll(cacheDir, 0755)
-	return cacheDir
-}
-
-func downloadImage(url, filename string) (string, error) {
-	localPath := filepath.Join(getCacheDir(), filename)
-
-	// Return if already exists
-	if _, err := os.Stat(localPath); err == nil {
-		return localPath, nil
-	}
-
-	// Download image
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to download image: %d", resp.StatusCode)
-	}
-
-	// Write to file
-	file, err := os.Create(localPath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	if _, err := io.Copy(file, resp.Body); err != nil {
-		return "", err
-	}
-
-	return localPath, nil
-}
-
-type SteamAppListResponse struct {
-	AppList struct {
+type SteamAppList struct {
+	Applist struct {
 		Apps []struct {
-			AppID int    `json:"appid"`
+			Appid int    `json:"appid"`
 			Name  string `json:"name"`
 		} `json:"apps"`
 	} `json:"applist"`
 }
 
-func fetchSteamAppID(gameName string) (int, error) {
-	// Check cache first
-	cacheKey := fmt.Sprintf("steam_appid_%s", strings.ToLower(strings.ReplaceAll(gameName, " ", "_")))
-	if cached := queryCacheEntry(cacheKey); cached != nil {
-		if metadata, ok := cached["metadata"].(string); ok && metadata != "" {
-			var data map[string]interface{}
-			if err := json.Unmarshal([]byte(metadata), &data); err == nil {
-				if appID, ok := data["appId"].(float64); ok {
-					return int(appID), nil
-				}
-			}
-		}
-	}
-
-	// Fetch from Steam API
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get("https://api.steampowered.com/ISteamApps/GetAppList/v2/")
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("steam api error: %d", resp.StatusCode)
-	}
-
-	var steamResp SteamAppListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&steamResp); err != nil {
-		return 0, err
-	}
-
-	// Normalize game name by removing non-alphanumeric characters
-	normalizedName := ""
-	for _, r := range gameName {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			normalizedName += string(r)
-		} else if r >= 'A' && r <= 'Z' {
-			normalizedName += string(r - 'A' + 'a')
-		}
-	}
-
-	// Find best match
-	for _, app := range steamResp.AppList.Apps {
-		normalizedApp := ""
-		for _, r := range app.Name {
-			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-				normalizedApp += string(r)
-			} else if r >= 'A' && r <= 'Z' {
-				normalizedApp += string(r - 'A' + 'a')
-			}
-		}
-
-		if normalizedApp == normalizedName {
-			// Cache the result
-			metadataJSON, _ := json.Marshal(map[string]int{"appId": app.AppID})
-			setCacheEntry(cacheKey, "", "", string(metadataJSON))
-			return app.AppID, nil
-		}
-	}
-
-	return 0, fmt.Errorf("game not found on steam")
+var steamAppList []struct {
+	Appid int    `json:"appid"`
+	Name  string `json:"name"`
 }
 
-func fetchGameMetadata(gameID int, gameName, executable string) error {
-	cacheKey := fmt.Sprintf("metadata_%s", strings.TrimSuffix(strings.ToLower(executable), ".exe"))
+var lastSteamFetch time.Time
 
-	// Check if already cached
-	if queryCacheEntry(cacheKey) != nil {
-		return nil
+func ensureSteamAppList() {
+	if len(steamAppList) > 0 && time.Since(lastSteamFetch) < 24*time.Hour {
+		return
 	}
-
-	// Try to fetch Steam App ID
-	appID, err := fetchSteamAppID(gameName)
+	resp, err := http.Get("https://api.steampowered.com/ISteamApps/GetAppList/v2/")
 	if err != nil {
-		// Mark as no data available
-		metadataJSON, _ := json.Marshal(map[string]bool{"noData": true})
-		setCacheEntry(cacheKey, "", "", string(metadataJSON))
+		return
+	}
+	defer resp.Body.Close()
+	var list SteamAppList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return
+	}
+	steamAppList = list.Applist.Apps
+	lastSteamFetch = time.Now()
+}
+
+func findSteamAppID(gameName string) int {
+	ensureSteamAppList()
+	nameLower := strings.ToLower(gameName)
+	for _, app := range steamAppList {
+		if strings.ToLower(app.Name) == nameLower {
+			return app.Appid
+		}
+	}
+	for _, app := range steamAppList {
+		if strings.Contains(strings.ToLower(app.Name), nameLower) {
+			return app.Appid
+		}
+	}
+	return 0
+}
+
+func fetchGameMetadata(gameId int, gameName, executable string) error {
+	userDataPath := getUserDataPath()
+	cacheDir := filepath.Join(userDataPath, "cache")
+	os.MkdirAll(cacheDir, 0755)
+
+	cacheKey := strings.ToLower(strings.ReplaceAll(gameName, " ", "_"))
+	if existing := getCacheEntry(cacheKey); existing != nil {
 		return nil
 	}
 
-	// Download images
-	iconURL := fmt.Sprintf("https://cdn.cloudflare.steamstatic.com/steam/apps/%d/capsule_231x87.jpg", appID)
-	coverURL := fmt.Sprintf("https://cdn.cloudflare.steamstatic.com/steam/apps/%d/library_600x900.jpg", appID)
-
-	iconPath, _ := downloadImage(iconURL, fmt.Sprintf("icon_%d.jpg", appID))
-	coverPath, _ := downloadImage(coverURL, fmt.Sprintf("cover_%d.jpg", appID))
-
-	// Update game with image paths
-	if iconPath != "" {
-		updateGame(gameID, map[string]interface{}{"icon": iconPath})
-	}
-	if coverPath != "" {
-		updateGame(gameID, map[string]interface{}{"coverImage": coverPath})
+	appID := findSteamAppID(gameName)
+	if appID == 0 {
+		return fmt.Errorf("game not found on Steam: %s", gameName)
 	}
 
-	// Cache metadata
+	iconURL := fmt.Sprintf("https://cdn.cloudflare.steamstatic.com/steam/apps/%d/header.jpg", appID)
+	iconPath := filepath.Join(cacheDir, fmt.Sprintf("%d_header.jpg", appID))
+
+	if err := downloadFile(iconURL, iconPath); err != nil {
+		return fmt.Errorf("failed to download icon: %v", err)
+	}
+
+	updateGameImages(gameId, iconPath, iconPath)
+
 	metadataJSON, _ := json.Marshal(map[string]int{"appId": appID})
 	setCacheEntry(cacheKey, "", iconPath, string(metadataJSON))
-
 	return nil
 }
 
-func getSystemStats() map[string]interface{} {
-	stats := make(map[string]interface{})
-	stats["cpu"] = 0
-	stats["ram"] = 0
-	stats["ramUsedMB"] = 0
-	stats["ramTotalMB"] = 0
-	stats["gpu"] = 0
-	stats["gpuName"] = "GPU"
+func downloadFile(url, destPath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
 
-	// Try to get CPU usage via wmic
-	cmd := exec.Command("cmd", "/c", "wmic cpu get loadpercentage /value")
-	output, err := cmd.Output()
-	if err == nil {
-		lines := strings.Split(string(output), "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "LoadPercentage") {
-				parts := strings.Split(line, "=")
-				if len(parts) == 2 {
-					var cpu int
-					fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &cpu)
-					stats["cpu"] = cpu
-				}
-			}
-		}
+func runPS(script string) (string, error) {
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+func getSystemStats() map[string]interface{} {
+	stats := map[string]interface{}{
+		"cpu":        0,
+		"ram":        0,
+		"ramUsedMB":  0,
+		"ramTotalMB": 0,
+		"gpu":        0,
+		"gpuName":    "GPU",
 	}
 
-	// Try to get memory usage via wmic
-	cmd = exec.Command("cmd", "/c", "wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /value")
-	output, err = cmd.Output()
-	if err == nil {
-		lines := strings.Split(string(output), "\n")
-		var free, total int64
+	script := `
+$cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average)
+$os  = Get-CimInstance Win32_OperatingSystem
+$free  = $os.FreePhysicalMemory
+$total = $os.TotalVisibleMemorySize
+$ramPct   = if ($total -gt 0) { [math]::Round(($total - $free) / $total * 100) } else { 0 }
+$ramUsed  = [math]::Round(($total - $free) / 1024)
+$ramTotal = [math]::Round($total / 1024)
+$gpu     = 0
+$gpuName = "GPU"
+try { $gpuName = (Get-CimInstance Win32_VideoController | Select-Object -First 1).Name } catch {}
+try {
+  $samples = (Get-Counter "\GPU Engine(*)\Utilization Percentage" -ErrorAction Stop).CounterSamples
+  $sum = ($samples | Where-Object { $_.Path -match "engtype_3D" } | Measure-Object CookedValue -Sum).Sum
+  $gpu = [math]::Round($sum)
+  if ($gpu -gt 100) { $gpu = 100 }
+} catch {}
+Write-Output "cpu=$cpu"
+Write-Output "ram=$ramPct"
+Write-Output "ramUsed=$ramUsed"
+Write-Output "ramTotal=$ramTotal"
+Write-Output "gpu=$gpu"
+Write-Output "gpuName=$gpuName"
+`
 
-		for _, line := range lines {
-			if strings.Contains(line, "FreePhysicalMemory") {
-				parts := strings.Split(line, "=")
-				if len(parts) == 2 {
-					fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &free)
-				}
-			}
-			if strings.Contains(line, "TotalVisibleMemorySize") {
-				parts := strings.Split(line, "=")
-				if len(parts) == 2 {
-					fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &total)
-				}
-			}
+	out, err := runPS(script)
+	if err != nil {
+		return stats
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
 		}
-
-		if total > 0 {
-			ramUsed := ((total - free) / total) * 100
-			stats["ram"] = ramUsed
-			stats["ramUsedMB"] = (total - free) / 1024
-			stats["ramTotalMB"] = total / 1024
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		switch key {
+		case "cpu":
+			if v, e := strconv.Atoi(val); e == nil {
+				stats["cpu"] = v
+			}
+		case "ram":
+			if v, e := strconv.Atoi(val); e == nil {
+				stats["ram"] = v
+			}
+		case "ramUsed":
+			if v, e := strconv.Atoi(val); e == nil {
+				stats["ramUsedMB"] = v
+			}
+		case "ramTotal":
+			if v, e := strconv.Atoi(val); e == nil {
+				stats["ramTotalMB"] = v
+			}
+		case "gpu":
+			if v, e := strconv.Atoi(val); e == nil {
+				stats["gpu"] = v
+			}
+		case "gpuName":
+			if val != "" {
+				stats["gpuName"] = val
+			}
 		}
 	}
 

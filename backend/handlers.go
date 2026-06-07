@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 )
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
@@ -41,15 +40,9 @@ func handleGetFavorites(w http.ResponseWriter, r *http.Request) {
 
 func handleGetRecentSessions(w http.ResponseWriter, r *http.Request) {
 	limit := 20
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			limit = l
-		}
-	}
-
 	var req map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-		if l, ok := req["limit"].(float64); ok {
+		if l, ok := req["limit"].(float64); ok && l > 0 {
 			limit = int(l)
 		}
 	}
@@ -62,15 +55,15 @@ func handleGetRecentSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleGetSessionsFiltered(w http.ResponseWriter, r *http.Request) {
-	filter := ""
-	var req map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-		if f, ok := req["filter"].(string); ok {
-			filter = f
-		}
+	var req struct {
+		Filter string `json:"filter"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	sessions := querySessionsFiltered(filter)
+	sessions := querySessionsFiltered(req.Filter)
 	if sessions == nil {
 		sessions = []map[string]interface{}{}
 	}
@@ -165,6 +158,17 @@ func handleGetActiveSessions(w http.ResponseWriter, r *http.Request) {
 // Settings handlers
 func handleGetAllSettings(w http.ResponseWriter, r *http.Request) {
 	settings := queryAllSettings()
+	if settings == nil {
+		settings = map[string]string{
+			"startWithWindows": "false",
+			"minimizeToTray":   "true",
+			"notifications":    "true",
+			"theme":            "dark",
+			"trackingEnabled":  "true",
+			"scanInterval":     "5000",
+			"cacheDuration":    "30",
+		}
+	}
 	writeJSON(w, settings)
 }
 

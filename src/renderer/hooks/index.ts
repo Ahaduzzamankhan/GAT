@@ -14,9 +14,8 @@ export function useGames() {
 
   useEffect(() => {
     refresh()
-    const unsub1 = api.on('game-started', refresh)
-    const unsub2 = api.on('game-stopped', refresh)
-    return () => { unsub1?.(); unsub2?.() }
+    const poll = setInterval(refresh, 8000)
+    return () => clearInterval(poll)
   }, [refresh])
 
   return { games, loading, refresh }
@@ -35,8 +34,8 @@ export function useStats() {
 
   useEffect(() => {
     refresh()
-    const unsub1 = api.on('game-stopped', refresh)
-    return () => { unsub1?.() }
+    const poll = setInterval(refresh, 8000)
+    return () => clearInterval(poll)
   }, [refresh])
 
   const stats = useMemo(() => {
@@ -85,8 +84,8 @@ export function useRecentSessions(limit = 20) {
 
   useEffect(() => {
     refresh()
-    const unsub = api.on('game-stopped', refresh)
-    return () => { unsub?.() }
+    const poll = setInterval(refresh, 8000)
+    return () => clearInterval(poll)
   }, [refresh])
 
   return { sessions, loading, refresh }
@@ -122,9 +121,8 @@ export function useCurrentlyPlaying() {
 
   useEffect(() => {
     api.db.getCurrentlyPlaying().then(setPlaying)
-    const unsub1 = api.on('game-started', () => api.db.getCurrentlyPlaying().then(setPlaying))
-    const unsub2 = api.on('game-stopped', () => api.db.getCurrentlyPlaying().then(setPlaying))
-    return () => { unsub1?.(); unsub2?.() }
+    const poll = setInterval(() => api.db.getCurrentlyPlaying().then(setPlaying), 6000)
+    return () => clearInterval(poll)
   }, [])
 
   return playing
@@ -136,8 +134,8 @@ export function useActiveSessions() {
 
   useEffect(() => {
     api.db.getActiveSessions().then(setSessions)
-    const unsub = api.on('active-sessions', ({ sessions: active }) => setSessions(active || []))
-    return () => { unsub?.() }
+    const poll = setInterval(() => api.db.getActiveSessions().then(setSessions), 6000)
+    return () => clearInterval(poll)
   }, [])
 
   useEffect(() => {
@@ -153,7 +151,8 @@ export function useSettings() {
   const [settings, setSettings] = useState<Settings | null>(null)
 
   const refresh = useCallback(async () => {
-    setSettings(await api.settings.getAll())
+    const data = await api.settings.getAll()
+    setSettings(data)
   }, [])
 
   const setSetting = useCallback(async (key: string, value: string) => {

@@ -152,6 +152,12 @@ func trackGames() {
 	// Get list of running processes
 	processes := getRunningProcesses()
 
+	// Build set of already-tracked gameIDs to prevent double-tracking the same game
+	trackedGameIDs := make(map[int]bool)
+	for _, s := range activeSessions {
+		trackedGameIDs[s.GameID] = true
+	}
+
 	// Check for new games
 	for _, proc := range processes {
 		key := fmt.Sprintf("%s:%d", strings.ToLower(proc.Name), proc.PID)
@@ -159,18 +165,25 @@ func trackGames() {
 		if _, exists := activeSessions[key]; !exists {
 			// Check if this is a game
 			if isGame(proc) {
-				// Start tracking
-				gameID := upsertGame(proc.ExeName, proc.Name)
+				// Normalize exe name to lowercase to prevent duplicate DB rows
+				normalizedExe := strings.ToLower(proc.ExeName)
+				gameID := upsertGame(normalizedExe, proc.Name)
+				if gameID == 0 {
+					continue
+				}
+				// Skip if this game is already being tracked (e.g. second process instance or wmic duplicate row)
+				if trackedGameIDs[gameID] {
+					continue
+				}
 				sessionID := startSession(gameID, time.Now().Format(time.RFC3339))
-
 				activeSessions[key] = &ActiveSession{
 					SessionID:  sessionID,
 					GameID:     gameID,
 					StartTime:  time.Now().Format(time.RFC3339),
-					Executable: proc.ExeName,
+					Executable: normalizedExe,
 					PID:        proc.PID,
 				}
-
+				trackedGameIDs[gameID] = true
 				log.Printf("Started tracking %s (PID: %d)", proc.Name, proc.PID)
 			}
 		}
@@ -196,76 +209,143 @@ func trackGames() {
 func getRunningProcesses() []ProcessInfo {
 	var processes []ProcessInfo
 
-	// Use tasklist to get all processes
-	cmd := exec.Command("tasklist.exe", "/v", "/fo", "csv")
+	// wmic gives PID + executable path in one shot
+	cmd := exec.Command("wmic", "process", "get", "Name,ProcessId,ExecutablePath", "/FORMAT:CSV")
 	output, err := cmd.Output()
 	if err != nil {
-		log.Printf("Error getting process list: %v", err)
-		return processes
+		log.Printf("Error getting process list via wmic: %v", err)
+		return getRunningProcessesFallback()
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines[1:] { // Skip header
+	// CSV columns: Node,ExecutablePath,Name,ProcessId
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			continue
 		}
-
-		fields := strings.Split(line, ",")
-		if len(fields) < 3 {
+		cols := strings.Split(line, ",")
+		if len(cols) < 4 {
 			continue
 		}
-
-		name := strings.Trim(strings.Trim(fields[0], "\""), " ")
+		exePath := strings.TrimSpace(cols[1])
+		exeName := strings.TrimSpace(cols[2])
+		pidStr := strings.TrimSpace(cols[3])
 		var pid int
-		fmt.Sscanf(strings.TrimSpace(fields[1]), "%d", &pid)
-
-		if pid == 0 || name == "" {
+		fmt.Sscanf(pidStr, "%d", &pid)
+		if pid == 0 || exeName == "" || !strings.HasSuffix(strings.ToLower(exeName), ".exe") {
 			continue
 		}
-
 		processes = append(processes, ProcessInfo{
 			PID:     pid,
-			Name:    strings.ToLower(name),
-			ExeName: name,
-			Path:    "", // Would need additional query for full path
+			Name:    strings.ToLower(exeName),
+			ExeName: exeName,
+			Path:    exePath,
 		})
 	}
 
 	return processes
 }
 
+func getRunningProcessesFallback() []ProcessInfo {
+	var processes []ProcessInfo
+	cmd := exec.Command("tasklist.exe", "/fo", "csv", "/nh")
+	output, err := cmd.Output()
+	if err != nil {
+		return processes
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		// CSV fields are quoted: "name","pid","session","mem","status"
+		fields := strings.Split(line, ",")
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.Trim(fields[0], "\"")
+		pidStr := strings.Trim(fields[1], "\"")
+		var pid int
+		fmt.Sscanf(strings.TrimSpace(pidStr), "%d", &pid)
+		if pid == 0 || name == "" || !strings.HasSuffix(strings.ToLower(name), ".exe") {
+			continue
+		}
+		processes = append(processes, ProcessInfo{
+			PID:     pid,
+			Name:    strings.ToLower(name),
+			ExeName: name,
+			Path:    "",
+		})
+	}
+	return processes
+}
+
 func isGame(proc ProcessInfo) bool {
-	// Check if in blocklist
+	nameLower := strings.ToLower(proc.Name)
+
 	for _, blocked := range systemBlocklist {
-		if strings.ToLower(proc.Name) == strings.ToLower(blocked) {
+		if nameLower == strings.ToLower(blocked) {
 			return false
 		}
 	}
 
-	// Check patterns
 	for _, pattern := range systemPatterns {
-		if pattern.MatchString(proc.Name) {
+		if pattern.MatchString(nameLower) {
 			return false
 		}
 	}
 
-	// Check with registry/game detection
-	return detectAuthorizedGame(proc.ExeName) || !isSystemProcess(proc.Name)
+	if proc.Path != "" {
+		pathLower := strings.ToLower(proc.Path)
+		systemDirs := []string{
+			"\\windows\\system32\\",
+			"\\windows\\syswow64\\",
+			"\\windows\\systemapps\\",
+			"\\windowsapps\\microsoft.",
+		}
+		for _, dir := range systemDirs {
+			if strings.Contains(pathLower, dir) {
+				return false
+			}
+		}
+	}
+
+	if detectAuthorizedGame(proc.ExeName) {
+		return true
+	}
+
+	if proc.Path != "" {
+		pathLower := strings.ToLower(proc.Path)
+		gameDirs := []string{
+			"steamapps\\common\\",
+			"steamapps/common/",
+			"epic games\\",
+			"gog games\\",
+			"ubisoft game launcher\\games\\",
+			"ea games\\",
+			"origin games\\",
+			"battle.net\\",
+			"itch.io\\",
+			"program files\\games\\",
+			"program files (x86)\\games\\",
+		}
+		for _, dir := range gameDirs {
+			if strings.Contains(pathLower, dir) {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func isSystemProcess(name string) bool {
-	// Simple heuristic - if it's in system directories, likely system process
-	systemDirs := []string{
-		"system32", "syswow64", "systemapps", "windowsapps",
-	}
-
 	nameLower := strings.ToLower(name)
-	for _, dir := range systemDirs {
+	for _, dir := range []string{"system32", "syswow64", "systemapps", "windowsapps"} {
 		if strings.Contains(nameLower, dir) {
 			return true
 		}
 	}
-
 	return false
 }
 
