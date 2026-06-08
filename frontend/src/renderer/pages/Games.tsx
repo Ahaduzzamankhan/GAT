@@ -100,9 +100,33 @@ export default function GamesPage() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
 
+  type SortOption = 'playtime-desc' | 'playtime-asc' | 'name-asc' | 'last-played' | 'newest'
+  const [sortBy, setSortBy] = useState<SortOption>('playtime-desc')
+
   const filtered = games.filter(g => {
     if (showFavOnly && g.favorite !== 1) return false
     return g.name.toLowerCase().includes(search.toLowerCase())
+  })
+
+  const sortedAndFiltered = [...filtered].sort((a, b) => {
+    switch (sortBy) {
+      case 'playtime-desc':
+        return b.totalPlaytime - a.totalPlaytime
+      case 'playtime-asc':
+        return a.totalPlaytime - b.totalPlaytime
+      case 'name-asc':
+        return a.name.localeCompare(b.name)
+      case 'last-played':
+        const dateA = a.lastPlayed ? new Date(a.lastPlayed).getTime() : 0
+        const dateB = b.lastPlayed ? new Date(b.lastPlayed).getTime() : 0
+        return dateB - dateA
+      case 'newest':
+        const firstSeenA = a.firstSeen ? new Date(a.firstSeen).getTime() : 0
+        const firstSeenB = b.firstSeen ? new Date(b.firstSeen).getTime() : 0
+        return firstSeenB - firstSeenA
+      default:
+        return 0
+    }
   })
 
   const handleToggleFav = async (id: number) => {
@@ -135,6 +159,17 @@ export default function GamesPage() {
           <i className="fa-solid fa-star mr-2" />
           Favorites
         </button>
+        <select
+          value={sortBy}
+          onChange={e => setSortBy(e.target.value as any)}
+          className="bg-bg-secondary border border-border-default rounded-xl px-4 py-2.5 text-sm text-text-secondary hover:text-text-primary focus:outline-none focus:border-border-active transition-colors cursor-pointer"
+        >
+          <option value="playtime-desc">Sort: Most Played</option>
+          <option value="playtime-asc">Sort: Least Played</option>
+          <option value="name-asc">Sort: Name (A-Z)</option>
+          <option value="last-played">Sort: Recently Played</option>
+          <option value="newest">Sort: Newest Added</option>
+        </select>
         <button
           onClick={() => setShowAddModal(true)}
           className="px-4 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-white/90 transition-all flex items-center gap-2"
@@ -144,7 +179,7 @@ export default function GamesPage() {
         </button>
       </div>
 
-      {filtered.length === 0 ? (
+      {sortedAndFiltered.length === 0 ? (
         <div className="text-center py-20 text-text-muted">
           <i className="fa-solid fa-gamepad text-4xl mb-4 block opacity-20" />
           <div>{search ? 'No games found' : 'No games tracked yet'}</div>
@@ -156,7 +191,7 @@ export default function GamesPage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
         >
-          {filtered.map(game => (
+          {sortedAndFiltered.map(game => (
             <motion.div
               key={game.id}
               layout

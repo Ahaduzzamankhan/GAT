@@ -46,11 +46,17 @@ export default function Dashboard() {
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="p-6 space-y-6 overflow-y-auto h-full">
       {playing.length > 0 && (
-        <motion.div variants={item} className="rounded-2xl bg-white p-4 flex items-center gap-4">
-          <div className="w-3 h-3 rounded-full bg-black animate-pulse-soft" />
+        <motion.div
+          variants={item}
+          className="rounded-2xl bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-bg-card/40 border border-emerald-500/20 p-4 flex items-center gap-4 shadow-[0_0_20px_rgba(16,185,129,0.04)]"
+        >
+          <div className="relative flex h-2.5 w-2.5 shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </div>
           <div>
-            <div className="text-black text-sm font-semibold">Currently Playing</div>
-            <div className="text-black/70 text-xs">{activeInfo || playing.join(', ')}</div>
+            <div className="text-emerald-400 text-xs font-bold uppercase tracking-wider">Currently Playing</div>
+            <div className="text-text-primary text-sm font-semibold mt-0.5">{activeInfo || playing.join(', ')}</div>
           </div>
         </motion.div>
       )}
@@ -91,18 +97,24 @@ export default function Dashboard() {
           )}
         </motion.div>
 
-        <motion.div variants={item} className="rounded-2xl border border-border-default bg-bg-card p-5">
-          <div className="text-text-muted text-xs font-medium uppercase tracking-wider mb-4">Weekly Activity</div>
+        <motion.div variants={item} className="rounded-2xl border border-border-default/60 bg-bg-card/75 p-5">
+          <div className="text-text-muted text-xs font-semibold uppercase tracking-wider mb-4">Weekly Activity</div>
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height={140}>
-              <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                <XAxis dataKey="date" tick={{ fill: '#555', fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#555', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <BarChart data={chartData} margin={{ top: 0, right: 0, left: -25, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="activityGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.85} />
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0.15} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: '#888', fontSize: 10 }} axisLine={false} tickLine={false} />
                 <Tooltip
-                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 8, color: '#fff' }}
+                  contentStyle={{ background: '#141414', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 12, color: '#fff', fontSize: 11 }}
                   formatter={(v: any) => [`${v}h`, 'Hours']}
                 />
-                <Bar dataKey="hours" fill="#ffffff" radius={[4, 4, 0, 0]} opacity={0.9} />
+                <Bar dataKey="hours" fill="url(#activityGrad)" radius={[5, 5, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (

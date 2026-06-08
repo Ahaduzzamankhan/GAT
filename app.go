@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/getlantern/systray"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+//go:embed build/appicon.png
+var appIcon []byte
 
 type App struct {
 	ctx context.Context
@@ -47,11 +52,15 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 	startTracking(interval)
+
+	// Start system tray in a goroutine
+	go a.setupSystray()
 }
 
 func (a *App) shutdown(ctx context.Context) {
 	stopTracking()
 	closeDatabase()
+	systray.Quit()
 }
 
 // ── Window controls ──────────────────────────────────────────────────────────
@@ -69,11 +78,46 @@ func (a *App) WindowMaximize() {
 }
 
 func (a *App) WindowClose() {
-	runtime.WindowHide(a.ctx)
+	if querySetting("minimizeToTray") == "true" {
+		runtime.WindowHide(a.ctx)
+	} else {
+		runtime.Quit(a.ctx)
+	}
 }
 
 func (a *App) WindowQuit() {
+	systray.Quit()
 	runtime.Quit(a.ctx)
+}
+
+// ── System Tray ──────────────────────────────────────────────────────────────
+
+func (a *App) setupSystray() {
+	systray.Run(a.onTrayReady, a.onTrayExit)
+}
+
+func (a *App) onTrayReady() {
+	systray.SetIcon(appIcon)
+	systray.SetTooltip("GAT - Game Activity Tracker")
+
+	mShow := systray.AddMenuItem("Show GAT", "Restore GAT window")
+	systray.AddSeparator()
+	mQuit := systray.AddMenuItem("Quit", "Quit GAT")
+
+	for {
+		select {
+		case <-mShow.ClickedCh:
+			runtime.WindowShow(a.ctx)
+		case <-mQuit.ClickedCh:
+			systray.Quit()
+			runtime.Quit(a.ctx)
+			return
+		}
+	}
+}
+
+func (a *App) onTrayExit() {
+	// Clean up if needed
 }
 
 // ── DB ───────────────────────────────────────────────────────────────────────

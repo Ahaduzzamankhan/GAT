@@ -1,6 +1,6 @@
 #define AppName "GAT"
 #define AppFullName "GAT - Game Activity Tracker"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppPublisher "Fluxenite"
 #define AppURL "https://github.com/Ahaduzzamankhan/GAT"
 #define AppExeName "GAT.exe"

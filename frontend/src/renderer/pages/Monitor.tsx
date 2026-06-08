@@ -28,13 +28,16 @@ function GaugeRing({ value, color, size = 80 }: { value: number; color: string; 
   const dash = (value / 100) * circ
   return (
     <svg width={size} height={size} className="rotate-[-90deg]">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1e1e1e" strokeWidth={8} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1f1f2e" strokeWidth={7} />
       <circle
         cx={size / 2} cy={size / 2} r={r} fill="none"
-        stroke={color} strokeWidth={8}
+        stroke={color} strokeWidth={7}
         strokeDasharray={`${dash} ${circ - dash}`}
         strokeLinecap="round"
-        style={{ transition: 'stroke-dasharray 0.4s ease' }}
+        style={{
+          transition: 'stroke-dasharray 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
+          filter: `drop-shadow(0 0 4px ${color}aa)`
+        }}
       />
     </svg>
   )
@@ -42,16 +45,21 @@ function GaugeRing({ value, color, size = 80 }: { value: number; color: string; 
 
 function StatGauge({ label, value, unit, color, sub }: { label: string; value: number; unit: string; color: string; sub?: string }) {
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-col items-center gap-2.5">
       <div className="relative">
         <GaugeRing value={value} color={color} size={88} />
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-text-primary font-bold text-base leading-none">{value}%</span>
+          <span
+            className="text-text-primary font-bold text-base leading-none font-mono"
+            style={{ textShadow: `0 0 8px ${color}33` }}
+          >
+            {value}%
+          </span>
         </div>
       </div>
       <div className="text-center">
-        <div className="text-text-primary text-xs font-semibold">{label}</div>
-        {sub && <div className="text-text-muted text-[10px] mt-0.5">{sub}</div>}
+        <div className="text-text-primary text-xs font-bold uppercase tracking-wider">{label}</div>
+        {sub && <div className="text-text-muted text-[10px] font-mono mt-0.5">{sub}</div>}
       </div>
     </div>
   )
@@ -162,8 +170,8 @@ export default function MonitorPage() {
       </div>
 
       {/* Gauges */}
-      <div className="rounded-2xl border border-border-default bg-bg-card p-5">
-        <div className="text-text-muted text-xs font-medium uppercase tracking-wider mb-5">Current Usage</div>
+      <div className="rounded-2xl border border-border-default/60 bg-bg-card/75 p-5 shadow-[0_4px_20px_rgba(0,0,0,0.15)]">
+        <div className="text-text-muted text-xs font-semibold uppercase tracking-wider mb-5">Current Usage</div>
         <div className="flex items-center justify-around">
           <StatGauge label="CPU" value={current?.cpu ?? 0} unit="%" color="#60a5fa" />
           <StatGauge label="RAM" value={current?.ram ?? 0} unit="%" color="#a78bfa"

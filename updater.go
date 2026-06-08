@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	AppVersion    = "1.0.0"
+	AppVersion    = "1.0.1"
 	GitHubOwner   = "Ahaduzzamankhan"
 	GitHubRepo    = "GAT"
 	UpdaterAPIURL = "https://api.github.com/repos/" + GitHubOwner + "/" + GitHubRepo + "/releases/latest"
