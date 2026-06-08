@@ -1,0 +1,447 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// hiddenCmd returns an exec.Cmd with CREATE_NO_WINDOW so no console flashes on screen.
+func hiddenCmd(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd
+}
+
+// Config
+const (
+	GPU_SAMPLE_MS   = 4000
+	GPU_SUSTAIN_SEC = 12
+	GPU_THRESHOLD   = 15
+	TRACK_INTERVAL  = 6000
+)
+
+var (
+	activeSessions = make(map[string]*ActiveSession)
+	trackingTicker *time.Ticker = nil
+	gpuTicker      *time.Ticker = nil
+
+	systemBlocklist = []string{
+		"explorer.exe", "svchost.exe", "lsass.exe", "csrss.exe", "winlogon.exe", "services.exe",
+		"smss.exe", "system", "registry", "dwm.exe", "taskhostw.exe", "conhost.exe", "fontdrvhost.exe",
+		"spoolsv.exe", "searchhost.exe", "searchindexer.exe", "ctfmon.exe", "sihost.exe",
+		"runtimebroker.exe", "applicationframehost.exe", "wuauclt.exe", "taskmgr.exe",
+		"regedit.exe", "dllhost.exe", "audiodg.exe", "wmiprvse.exe", "nissrv.exe",
+		"wsl.exe", "wslhost.exe", "wslservice.exe", "vmmemwsl", "vmmem",
+		"msmpeng.exe", "securityhealthsystray.exe", "securityhealthservice.exe",
+		"smartscreen.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe",
+		"lockapp.exe", "textinputhost.exe", "inputmethod.exe", "tabletinputservice.exe",
+		"usoclient.exe", "musnotification.exe", "musnotificationux.exe",
+		"srtasks.exe", "compattelrunner.exe", "wsqmcons.exe", "wermgr.exe", "werhost.exe",
+		"msiexec.exe", "setup.exe", "install.exe", "uninstall.exe", "uninst.exe",
+		"perfmon.exe", "mmc.exe", "msconfig.exe", "msinfo32.exe", "eventvwr.exe",
+		"systemsettings.exe", "settingssynchost.exe",
+		"dxdiag.exe", "winver.exe", "osk.exe", "magnify.exe", "narrator.exe",
+		"cmd.exe", "powershell.exe", "powershell_ise.exe", "wt.exe", "windowsterminal.exe",
+		"chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe", "vivaldi.exe",
+		"node.exe", "electron.exe", "code.exe", "devenv.exe", "rider64.exe", "idea64.exe",
+		"git.exe", "github desktop.exe", "githubdesktop.exe",
+		"python.exe", "python3.exe", "pythonw.exe", "javaws.exe",
+		"discord.exe", "slack.exe", "teams.exe", "zoom.exe", "skype.exe", "telegram.exe",
+		"spotify.exe", "vlc.exe", "wmplayer.exe", "mpv.exe",
+		"gimp-2.10.exe", "inkscape.exe", "krita.exe", "figma.exe",
+		"photoshop.exe", "illustrator.exe", "premiere.exe", "aftereffects.exe",
+		"davinciresolve.exe", "obs64.exe", "obs32.exe", "obs.exe",
+		"steam.exe", "steamwebhelper.exe", "steamservice.exe", "steamtriage.exe",
+		"epicgameslauncher.exe", "easyanticheat_launcher.exe", "eacservice.exe",
+		"easyanticheat.exe", "easyanticheateos.exe",
+		"origin.exe", "eadesktop.exe", "eabackgroundservice.exe",
+		"upc.exe", "ubisoftconnect.exe",
+		"gog galaxy.exe", "goggalaxy.exe", "galaxyclient.exe",
+		"battlenet.exe", "battle.net.exe",
+		"xboxapp.exe", "xboxpcapp.exe", "gamingservices.exe", "gamingservicesnet.exe",
+		"gamebar.exe", "gamebarft.exe", "gamebarftserver.exe",
+		"playnite.exe", "playnite.fullscreenapp.exe", "heroic.exe", "itchio.exe", "itch.exe",
+		"vortex.exe", "nexusmods.exe",
+		"fraps.exe", "msiafterburner.exe", "rivatuner.exe", "rtss.exe",
+		"nvcplui.exe", "nvcontainer.exe", "nvdisplay.container.exe",
+		"battleye.exe", "becllient.exe", "vgc.exe", "vanguard.exe", "faceitclient.exe",
+		"notepad.exe", "notepad++.exe", "wordpad.exe", "calc.exe", "mspaint.exe",
+		"onedrive.exe", "dropbox.exe", "googledrivesync.exe",
+		"winrar.exe", "7z.exe", "7zfm.exe", "winzip64.exe",
+		"acrobat.exe", "acrord32.exe",
+		"lghub.exe", "ghub.exe", "synapse3.exe", "razersynapse.exe", "icue.exe",
+		"mbam.exe", "malwarebytes.exe", "avast.exe", "avgui.exe",
+		"procexp.exe", "procexp64.exe", "procmon.exe", "autoruns.exe",
+		"gat.exe", "everything.exe", "yourphone.exe", "phonelinkprocess.exe",
+		"microsoftedgeupdate.exe", "googleupdate.exe", "blender.exe",
+	}
+
+	systemPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)^gamebar`),
+		regexp.MustCompile(`(?i)^gameinput`),
+		regexp.MustCompile(`(?i)gaming(service|overlay)`),
+		regexp.MustCompile(`(?i)^xbox(app|pcapp|gaming)`),
+		regexp.MustCompile(`(?i)anticheat`),
+		regexp.MustCompile(`(?i)battleye`),
+		regexp.MustCompile(`(?i)crash(handler|reporter|pad|dump)`),
+		regexp.MustCompile(`(?i)^steam(web|service|crash|triage|update|repair)`),
+		regexp.MustCompile(`(?i)^ea(crash|update|background|launch)`),
+		regexp.MustCompile(`(?i)^nvidia\s?(share|geforce)`),
+		regexp.MustCompile(`(?i)^nvcontainer`),
+		regexp.MustCompile(`(?i)^nvdisplay`),
+		regexp.MustCompile(`(?i)^amd(dvr|ow|rsserv)`),
+		regexp.MustCompile(`(?i)update(r|service|daemon)?$`),
+		regexp.MustCompile(`(?i)^updater`),
+		regexp.MustCompile(`(?i)(install|setup|uninstall|uninst)(er|ation)?$`),
+		regexp.MustCompile(`(?i)^(vc_redist|directx|dxsetup|dotnet)`),
+		regexp.MustCompile(`(?i)tray(app)?$`),
+		regexp.MustCompile(`(?i)systray$`),
+		regexp.MustCompile(`(?i)background(task|service|process)?$`),
+	}
+
+	ambiguousExes = map[string]bool{
+		"javaw.exe":   true,
+		"java.exe":    true,
+		"wine.exe":    true,
+		"wine64.exe":  true,
+	}
+)
+
+type ProcessInfo struct {
+	PID       int
+	Name      string // lowercase .exe
+	ExeName   string // original casing
+	Path      string
+	WindowTitle string
+}
+
+type ActiveSession struct {
+	SessionID  int
+	GameID     int
+	StartTime  string
+	Executable string
+	PID        int
+}
+
+func startTracking(interval time.Duration) {
+	if trackingTicker != nil {
+		return
+	}
+
+	trackingTicker = time.NewTicker(interval)
+
+	go func() {
+		for range trackingTicker.C {
+			trackGames()
+		}
+	}()
+}
+
+func stopTracking() {
+	if trackingTicker != nil {
+		trackingTicker.Stop()
+		trackingTicker = nil
+	}
+
+	// End all active sessions
+	for key, session := range activeSessions {
+		endSession(session.SessionID, time.Now().Format(time.RFC3339), int(time.Since(parseTime(session.StartTime)).Seconds()))
+		delete(activeSessions, key)
+	}
+}
+
+func trackGames() {
+	// Get list of running processes
+	processes := getRunningProcesses()
+
+	// Build set of already-tracked gameIDs to prevent double-tracking the same game
+	trackedGameIDs := make(map[int]bool)
+	for _, s := range activeSessions {
+		trackedGameIDs[s.GameID] = true
+	}
+
+	// Check for new games
+	for _, proc := range processes {
+		key := fmt.Sprintf("%s:%d", strings.ToLower(proc.Name), proc.PID)
+
+		if _, exists := activeSessions[key]; !exists {
+			// Check if this is a game
+			if isGame(proc) {
+				// Normalize exe name to lowercase to prevent duplicate DB rows
+				normalizedExe := strings.ToLower(proc.ExeName)
+				gameID := upsertGame(normalizedExe, proc.Name)
+				if gameID == 0 {
+					continue
+				}
+				// Skip if this game is already being tracked (e.g. second process instance or wmic duplicate row)
+				if trackedGameIDs[gameID] {
+					continue
+				}
+				sessionID := startSession(gameID, time.Now().Format(time.RFC3339))
+				activeSessions[key] = &ActiveSession{
+					SessionID:  sessionID,
+					GameID:     gameID,
+					StartTime:  time.Now().Format(time.RFC3339),
+					Executable: normalizedExe,
+					PID:        proc.PID,
+				}
+				trackedGameIDs[gameID] = true
+				log.Printf("Started tracking %s (PID: %d)", proc.Name, proc.PID)
+			}
+		}
+	}
+
+	// Check for ended sessions
+	runningPIDs := make(map[int]bool)
+	for _, proc := range processes {
+		runningPIDs[proc.PID] = true
+	}
+
+	for key, session := range activeSessions {
+		if !runningPIDs[session.PID] {
+			// Process ended
+			duration := int(time.Since(parseTime(session.StartTime)).Seconds())
+			endSession(session.SessionID, time.Now().Format(time.RFC3339), duration)
+			delete(activeSessions, key)
+			log.Printf("Stopped tracking session %d", session.SessionID)
+		}
+	}
+}
+
+func getRunningProcesses() []ProcessInfo {
+	var processes []ProcessInfo
+
+	// wmic gives PID + executable path in one shot
+	cmd := hiddenCmd("wmic", "process", "get", "Name,ProcessId,ExecutablePath", "/FORMAT:CSV")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Error getting process list via wmic: %v", err)
+		return getRunningProcessesFallback()
+	}
+
+	// CSV columns: Node,ExecutablePath,Name,ProcessId
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		cols := strings.Split(line, ",")
+		if len(cols) < 4 {
+			continue
+		}
+		exePath := strings.TrimSpace(cols[1])
+		exeName := strings.TrimSpace(cols[2])
+		pidStr := strings.TrimSpace(cols[3])
+		var pid int
+		fmt.Sscanf(pidStr, "%d", &pid)
+		if pid == 0 || exeName == "" || !strings.HasSuffix(strings.ToLower(exeName), ".exe") {
+			continue
+		}
+		processes = append(processes, ProcessInfo{
+			PID:     pid,
+			Name:    strings.ToLower(exeName),
+			ExeName: exeName,
+			Path:    exePath,
+		})
+	}
+
+	return processes
+}
+
+func getRunningProcessesFallback() []ProcessInfo {
+	var processes []ProcessInfo
+	cmd := hiddenCmd("tasklist.exe", "/fo", "csv", "/nh")
+	output, err := cmd.Output()
+	if err != nil {
+		return processes
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		// CSV fields are quoted: "name","pid","session","mem","status"
+		fields := strings.Split(line, ",")
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.Trim(fields[0], "\"")
+		pidStr := strings.Trim(fields[1], "\"")
+		var pid int
+		fmt.Sscanf(strings.TrimSpace(pidStr), "%d", &pid)
+		if pid == 0 || name == "" || !strings.HasSuffix(strings.ToLower(name), ".exe") {
+			continue
+		}
+		processes = append(processes, ProcessInfo{
+			PID:     pid,
+			Name:    strings.ToLower(name),
+			ExeName: name,
+			Path:    "",
+		})
+	}
+	return processes
+}
+
+func isGame(proc ProcessInfo) bool {
+	nameLower := strings.ToLower(proc.Name)
+
+	for _, blocked := range systemBlocklist {
+		if nameLower == strings.ToLower(blocked) {
+			return false
+		}
+	}
+
+	for _, pattern := range systemPatterns {
+		if pattern.MatchString(nameLower) {
+			return false
+		}
+	}
+
+	if proc.Path != "" {
+		pathLower := strings.ToLower(proc.Path)
+		systemDirs := []string{
+			"\\windows\\system32\\",
+			"\\windows\\syswow64\\",
+			"\\windows\\systemapps\\",
+			"\\windowsapps\\microsoft.",
+		}
+		for _, dir := range systemDirs {
+			if strings.Contains(pathLower, dir) {
+				return false
+			}
+		}
+	}
+
+	if detectAuthorizedGame(proc.ExeName) {
+		return true
+	}
+
+	if proc.Path != "" {
+		pathLower := strings.ToLower(proc.Path)
+		gameDirs := []string{
+			"steamapps\\common\\",
+			"steamapps/common/",
+			"epic games\\",
+			"gog games\\",
+			"ubisoft game launcher\\games\\",
+			"ea games\\",
+			"origin games\\",
+			"battle.net\\",
+			"itch.io\\",
+			"program files\\games\\",
+			"program files (x86)\\games\\",
+		}
+		for _, dir := range gameDirs {
+			if strings.Contains(pathLower, dir) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func isSystemProcess(name string) bool {
+	nameLower := strings.ToLower(name)
+	for _, dir := range []string{"system32", "syswow64", "systemapps", "windowsapps"} {
+		if strings.Contains(nameLower, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func getCurrentlyPlaying() []string {
+	var playing []string
+	seenGames := make(map[int]bool)
+
+	for _, session := range activeSessions {
+		if !seenGames[session.GameID] {
+			game := queryGameByID(session.GameID)
+			if game != nil {
+				playing = append(playing, game["name"].(string))
+				seenGames[session.GameID] = true
+			}
+		}
+	}
+
+	return playing
+}
+
+func getActiveSessions() []map[string]interface{} {
+	var sessions []map[string]interface{}
+
+	for _, session := range activeSessions {
+		game := queryGameByID(session.GameID)
+		if game != nil {
+			sessions = append(sessions, map[string]interface{}{
+				"sessionId":   session.SessionID,
+				"gameId":      session.GameID,
+				"startTime":   session.StartTime,
+				"executable":  session.Executable,
+				"name":        game["name"],
+				"icon":        game["icon"],
+				"coverImage":  game["coverImage"],
+			})
+		}
+	}
+
+	return sessions
+}
+
+func updateTrayMenu() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Would update system tray in production
+		// For now, just a no-op
+		_ = getCurrentlyPlaying()
+	}
+}
+
+func parseTime(timeStr string) time.Time {
+	t, _ := time.Parse(time.RFC3339, timeStr)
+	return t
+}
+
+func writePsScripts(gpuScriptPath, dllScriptPath string) {
+	gpuScript := `$counters = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction SilentlyContinue
+if (-not $counters) { exit }
+$result = @{}
+foreach ($s in $counters.CounterSamples) {
+  if ($s.CookedValue -lt 0.5) { continue }
+  if ($s.Path -notmatch 'pid_(\\d+)') { continue }
+  $pid = [int]$Matches[1]
+  if ($s.Path -notmatch 'engtype_3D') { continue }
+  if ($result.ContainsKey($pid)) { $result[$pid] += $s.CookedValue }
+  else { $result[$pid] = $s.CookedValue }
+}
+foreach ($kv in $result.GetEnumerator()) {
+  Write-Output "$($kv.Key)=$([math]::Round($kv.Value,1))"
+}`
+
+	dllScript := `param([string]$Pids, [string]$Dlls)
+$pidList = $Pids -split ',' | ForEach-Object { [int]$_ }
+$dllList = $Dlls -split ','
+$out = @()
+foreach ($pid in $pidList) {
+  try {
+    $proc = Get-Process -Id $pid -ErrorAction Stop
+    $mods = $proc.Modules | Select-Object -ExpandProperty ModuleName -ErrorAction SilentlyContinue
+    foreach ($dll in $dllList) {
+      if ($mods -contains $dll) { $out += $pid; break }
+    }
+  } catch {}
+}
+Write-Output ($out -join ',')`
+
+	os.WriteFile(gpuScriptPath, []byte(gpuScript), 0644)
+	os.WriteFile(dllScriptPath, []byte(dllScript), 0644)
+}
